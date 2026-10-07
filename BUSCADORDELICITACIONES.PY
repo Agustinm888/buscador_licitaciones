@@ -10,7 +10,7 @@ from google import genai
 from dotenv import load_dotenv
 
 # --- 1. Configuración Inicial ---
-load_dotenv()  # Carga variables desde un archivo .env si existe
+load_dotenv()
 
 TICKET = os.environ.get("MERCADO_PUBLICO_TICKET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -18,7 +18,6 @@ EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER", "tu_correo@gmail.com")
 EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT", "tu_correo@gmail.com")
 
-# Configurar logging para registrar el proceso
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- 2. Búsqueda de Licitaciones ---
@@ -28,31 +27,38 @@ def buscar_licitaciones():
     url = f"https://api.mercadopublico.cl/servicios/v1/publico/licitaciones.json?fecha={fecha_hoy}&ticket={TICKET}"
     
     try:
-        response = requests.get(url, timeout=15) # Evita bloqueos indefinidos
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         data = response.json()
         
-        licitaciones = data.get("Listado", [])
+        # Manejo seguro por si la API devuelve null en 'Listado'
+        licitaciones = data.get("Listado") or []
         logging.info(f"Se encontraron {len(licitaciones)} licitaciones en total para hoy.")
         return licitaciones
     except requests.exceptions.RequestException as e:
         logging.error(f"Error al conectar con Mercado Público: {e}")
         return []
+    except ValueError:
+        logging.error("La respuesta de la API no es un JSON válido.")
+        return []
 
-# --- 3. Pre-Filtro por Palabras Clave (Optimización) ---
+# --- 3. Pre-Filtro por Palabras Clave ---
 def pre_filtrar_licitaciones(licitaciones):
-    """
-    Filtra localmente antes de usar la API de Gemini para ahorrar tiempo y tokens.
-    """
     palabras_clave = [
         "topografía", "topografico", "geomatica", "geomática", "geomensura",
         "cartografía", "sig ", "gis ", "arcgis", "fotogrametría", "teledetección",
-        "levantamiento", "geodesia", "lidar", "gnss", "taquimetría", "civil 3d"
+        "levantamiento", "geodesia", "lidar", "gnss", "taquimetría", "civil 3d",
+        "análisis espacial", "modelamiento hidrológico", "imágenes satelitales",
+        "sentinel", "landsat", "arcpy"
     ]
     
     candidatas = []
     for lic in licitaciones:
-        texto_busqueda = f"{lic.get('Nombre', '')} {lic.get('Descripcion', '')}".lower()
+        # Prevención de errores si un campo viene vacío (None) desde la API
+        nombre = lic.get('Nombre') or ""
+        descripcion = lic.get('Descripcion') or ""
+        texto_busqueda = f"{nombre} {descripcion}".lower()
+        
         if any(keyword in texto_busqueda for keyword in palabras_clave):
             candidatas.append(lic)
             
@@ -70,13 +76,15 @@ def filtrar_con_ia(licitaciones_candidatas):
 
     logging.info("Filtrando candidatas con Gemini...")
     client = genai.Client(api_key=GEMINI_API_KEY)
-    perfil = "Geomática, Topografía, Geomensura, Cartografía, SIG, Fotogrametría"
+    
+    # Perfil técnico detallado
+    perfil = "Ingeniería en Geomensura, Geomática, Topografía, Análisis Espacial, SIG, ArcGIS, Fotogrametría, Teledetección y Redes Geodésicas"
     
     licitaciones_filtradas = []
     
     for lic in licitaciones_candidatas:
-        titulo = lic.get("Nombre", "Sin título")
-        descripcion = lic.get("Descripcion", "")
+        titulo = lic.get("Nombre") or "Sin título"
+        descripcion = lic.get("Descripcion") or "Sin descripción"
         
         prompt = f"""
         Actúa como un experto en licitaciones de ingeniería y geociencias en Chile.
@@ -85,11 +93,10 @@ def filtrar_con_ia(licitaciones_candidatas):
         Título: {titulo}
         Descripción: {descripcion}
         
-        Responde ÚNICAMENTE con "SI" si es un servicio que esta empresa podría postular, o "NO" si es irrelevante (por ejemplo, si solo compran software genérico o materiales de construcción sin relación).
+        Responde ÚNICAMENTE con la palabra "SI" si es un servicio que esta empresa podría postular, o "NO" si es irrelevante (por ejemplo, compra de software genérico o materiales sin relación directa).
         """
         
         try:
-            # Uso de flash para respuestas rápidas y económicas
             response = client.models.generate_content(
                 model='gemini-2.5-flash', 
                 contents=prompt
@@ -97,7 +104,8 @@ def filtrar_con_ia(licitaciones_candidatas):
             
             respuesta_texto = response.text.strip().upper()
             
-            if "SI" in respuesta_texto:
+            # Validación estricta para evitar falsos positivos
+            if "SI" in respuesta_texto and not respuesta_texto.startswith("NO"):
                 logging.info(f"✅ ACEPTADA por IA: {titulo}")
                 licitaciones_filtradas.append(lic)
             else:
@@ -105,10 +113,10 @@ def filtrar_con_ia(licitaciones_candidatas):
                 
         except Exception as e:
             logging.error(f"Error con Gemini al procesar '{titulo}': {e}")
-            # Si falla la IA, conservamos la licitación por precaución
+            # En caso de error de la API, conservamos la licitación para no perder la oportunidad
             licitaciones_filtradas.append(lic)
         
-        time.sleep(1.5) # Pausa reducida, pero necesaria para rate limits
+        time.sleep(1.5)
         
     return licitaciones_filtradas
 
@@ -125,15 +133,16 @@ def enviar_correo(licitaciones_relevantes):
     msg['Subject'] = f"🔍 {len(licitaciones_relevantes)} Licitaciones Relevantes en Mercado Público"
     
     cuerpo = """
-    <h2>Licitaciones de Geomática y Topografía Encontradas</h2>
+    <h2>Licitaciones de Geomensura, Geomática y Topografía</h2>
     <p>El sistema ha detectado las siguientes oportunidades para hoy:</p>
     <ul>
     """
     
     for lic in licitaciones_relevantes:
-        codigo = lic.get('CodigoExterno')
+        codigo = lic.get('CodigoExterno', 'Sin-Codigo')
+        nombre = lic.get('Nombre', 'Licitación sin nombre')
         link = f"https://www.mercadopublico.cl/Procurement/Modules/RFB/DetailsAcquisition.aspx?idLicitacion={codigo}"
-        cuerpo += f"<li><strong>{lic.get('Nombre')}</strong> ({codigo}) - <a href='{link}'>Ver detalle</a></li>"
+        cuerpo += f"<li><strong>{nombre}</strong> ({codigo}) - <a href='{link}'>Ver detalle</a></li>"
         
     cuerpo += "</ul>"
     msg.attach(MIMEText(cuerpo, 'html'))
