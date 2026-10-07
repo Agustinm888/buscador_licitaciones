@@ -31,7 +31,6 @@ def buscar_licitaciones():
         response.raise_for_status()
         data = response.json()
         
-        # Manejo seguro por si la API devuelve null en 'Listado'
         licitaciones = data.get("Listado") or []
         logging.info(f"Se encontraron {len(licitaciones)} licitaciones en total para hoy.")
         return licitaciones
@@ -54,7 +53,6 @@ def pre_filtrar_licitaciones(licitaciones):
     
     candidatas = []
     for lic in licitaciones:
-        # Prevención de errores si un campo viene vacío (None) desde la API
         nombre = lic.get('Nombre') or ""
         descripcion = lic.get('Descripcion') or ""
         texto_busqueda = f"{nombre} {descripcion}".lower()
@@ -77,7 +75,6 @@ def filtrar_con_ia(licitaciones_candidatas):
     logging.info("Filtrando candidatas con Gemini...")
     client = genai.Client(api_key=GEMINI_API_KEY)
     
-    # Perfil técnico detallado
     perfil = "Ingeniería en Geomensura, Geomática, Topografía, Análisis Espacial, SIG, ArcGIS, Fotogrametría, Teledetección y Redes Geodésicas"
     
     licitaciones_filtradas = []
@@ -93,7 +90,7 @@ def filtrar_con_ia(licitaciones_candidatas):
         Título: {titulo}
         Descripción: {descripcion}
         
-        Responde ÚNICAMENTE con la palabra "SI" si es un servicio que esta empresa podría postular, o "NO" si es irrelevante (por ejemplo, compra de software genérico o materiales sin relación directa).
+        Responde ÚNICAMENTE con la palabra "SI" si es un servicio que esta empresa podría postular, o "NO" si es irrelevante.
         """
         
         try:
@@ -104,7 +101,6 @@ def filtrar_con_ia(licitaciones_candidatas):
             
             respuesta_texto = response.text.strip().upper()
             
-            # Validación estricta para evitar falsos positivos
             if "SI" in respuesta_texto and not respuesta_texto.startswith("NO"):
                 logging.info(f"✅ ACEPTADA por IA: {titulo}")
                 licitaciones_filtradas.append(lic)
@@ -113,7 +109,6 @@ def filtrar_con_ia(licitaciones_candidatas):
                 
         except Exception as e:
             logging.error(f"Error con Gemini al procesar '{titulo}': {e}")
-            # En caso de error de la API, conservamos la licitación para no perder la oportunidad
             licitaciones_filtradas.append(lic)
         
         time.sleep(1.5)
